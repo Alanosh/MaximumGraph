@@ -1,0 +1,97 @@
+name: Android CI Build & Sign Pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    name: Compile & Sign App
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: Prepare environment configuration
+        run: |
+          # Copy .env.example to .env to satisfy the Secrets Gradle Plugin check at build time.
+          cp .env.example .env
+
+      - name: Decode Debug Keystore
+        run: |
+          # Decodes our pre-existing debug keystore so that debug builds compile with signatures out of the box.
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore || openssl base64 -d -in debug.keystore.base64 -out debug.keystore
+            echo "Successfully decoded debug.keystore using source base64 archive."
+          else
+            echo "Warning: debug.keystore.base64 is missing. Let gradle manage automated key generation."
+          fi
+
+      - name: Build & Package Signed App
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/my-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          # Generate the local Gradle wrapper if it hasn't been generated yet
+          if [ ! -f gradlew ]; then
+            gradle wrapper
+          fi
+          chmod +x gradlew
+
+          # Conditional build step:
+          # If the user has configured the RELEASE_KEYSTORE_BASE64 secret in GitHub, 
+          # we decode it and execute dual debug + signed release builds. 
+          # Otherwise, we gracefully fall back to a fully signed, instantly installable debug APK.
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
+            echo "Custom release keystore found. Compiling signed RELEASE + DEBUG binaries..."
+            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > my-upload-key.jks
+            ./gradlew assembleDebug assembleRelease
+          else
+            echo "No custom release credentials found. Compiling signed DEBUG binary..."
+            ./gradlew assembleDebug
+          fi
+
+      - name: Organize Core Artifacts
+        run: |
+          mkdir -p build-artifacts
+          
+          # Collect debug APK if built
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk build-artifacts/DrawAnimate-debug-signed.apk
+            echo "Added DrawAnimate-debug-signed.apk to exports."
+          fi
+          
+          # Collect release APK if built
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk build-artifacts/DrawAnimate-release-signed.apk
+            echo "Added DrawAnimate-release-signed.apk to exports."
+          fi
+          
+          # Collect release AAB bundle if built
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab build-artifacts/DrawAnimate-release-bundle.aab
+            echo "Added DrawAnimate-release-bundle.aab to exports."
+          fi
+
+      - name: Upload Downloadable Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DrawAnimate-Installers
+          path: build-artifacts/
+          retention-days: 14

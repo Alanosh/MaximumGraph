@@ -1,0 +1,106 @@
+name: DrawAnimate Android Build & Package pipeline
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    name: Assemble and Archive App Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java JDK Platform
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Configure Gradle Build System
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: wrapper
+
+      - name: Prepare Local Environment Configuration
+        run: |
+          # Copy .env.example to .env to satisfy the Secrets Gradle Plugin check at build time.
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            touch .env
+          fi
+
+      - name: Decrypt Integrated Developer Keystore
+        run: |
+          # Use local base64 encoded archive to restore original debug.keystore
+          if [ -f debug.keystore.base64 ] && [ ! -f debug.keystore ]; then
+            echo "Decoding integrated debug keystore..."
+            base64 -d debug.keystore.base64 > debug.keystore || openssl base64 -d -in debug.keystore.base64 -out debug.keystore
+          else
+            echo "Debug keystore archive not found or already initialized."
+          fi
+
+      - name: Compile and Assemble Debug Package (Signed Demo APK)
+        run: |
+          # Set executable permissions on gradlew
+          if [ ! -f gradlew ]; then
+            gradle wrapper
+          fi
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Compile and Assemble Release Package
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/release-upload-key.jks
+          STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
+            echo "Decoding custom repository Release Keystore..."
+            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release-upload-key.jks
+            ./gradlew assembleRelease
+          else
+            echo "No custom release key configured. Compiling testing/unsigned release package..."
+            ./gradlew assembleRelease
+          fi
+
+      - name: Collect and Standardize Artifacts Structure
+        run: |
+          mkdir -p build-installers
+          
+          # Copy Debug outputs
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            cp app/build/outputs/apk/debug/app-debug.apk build-installers/DrawAnimate-Debug-signed.apk
+            echo "Collected Debug APK."
+          fi
+          
+          # Copy Release APK outputs
+          if [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+            cp app/build/outputs/apk/release/app-release-unsigned.apk build-installers/DrawAnimate-Release-unsigned.apk
+            echo "Collected Unsigned Release APK."
+          elif [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk build-installers/DrawAnimate-Release.apk
+            echo "Collected Release APK."
+          fi
+
+          # Copy Bundle outputs
+          if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+            cp app/build/outputs/bundle/release/app-release.aab build-installers/DrawAnimate-Release.aab
+            echo "Collected Release AAB."
+          fi
+
+      - name: Upload Deliverable Build Packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: DrawAnimate-Build-Outputs
+          path: build-installers/
+          retention-days: 14
+          if-no-files-found: warn

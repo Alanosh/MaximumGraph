@@ -1,0 +1,6 @@
+{
+  "name": "DrawAnimate Editor",
+  "description": "Low-RAM Draw-to-Animate Video Editor with custom speed curve drawing, multi-track timeline, dynamic keyframing, and interactive frame preview.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
